@@ -1,0 +1,18 @@
+# External Secrets Operator Helm chart values (lean, for kind).
+installCRDs: true
+replicaCount: 1
+concurrent: 2
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+webhook:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+certController:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi

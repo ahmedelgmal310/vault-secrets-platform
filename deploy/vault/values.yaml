@@ -1,0 +1,58 @@
+# HashiCorp Vault Helm chart values: 3-node Raft cluster on a single kind node.
+# Chart and image versions are pinned in e2e/lib.sh and docs/versions.md.
+global:
+  enabled: true
+  tlsDisable: true # in-cluster listener is plain HTTP on kind; see README "Limitations"
+
+injector:
+  enabled: false # the app talks to the Vault API directly; ESO handles syncing
+
+ui:
+  enabled: false
+
+server:
+  image:
+    repository: hashicorp/vault
+    # tag (with digest) is set by e2e/setup.sh from VAULT_IMAGE_TAG
+  logLevel: info
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  # Single-node kind: the chart's default hard anti-affinity would leave two
+  # of the three pods Pending.
+  affinity: ""
+  dataStorage:
+    enabled: true
+    size: 1Gi
+  auditStorage:
+    enabled: true
+    size: 1Gi
+  standalone:
+    enabled: false
+  ha:
+    enabled: true
+    replicas: 3
+    raft:
+      enabled: true
+      setNodeId: true
+      config: |
+        ui = false
+        disable_mlock = true
+
+        listener "tcp" {
+          tls_disable     = 1
+          address         = "[::]:8200"
+          cluster_address = "[::]:8201"
+        }
+
+        storage "raft" {
+          path = "/vault/data"
+        }
+
+        service_registration "kubernetes" {}
+  # Vault reviews client JWTs with the TokenReview API.
+  authDelegator:
+    enabled: true

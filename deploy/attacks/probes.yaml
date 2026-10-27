@@ -1,0 +1,295 @@
+# Access probes run by e2e/attacks.sh. Each Job is one identity attempting a
+# list of operations; vaultprobe exits non-zero if any outcome differs from
+# the expectation, so "deny" here is asserted, not hoped for.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: intruder
+  namespace: orders
+automountServiceAccountToken: false
+---
+# Same name as the real service account, but in another namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders-api
+  namespace: rogue
+automountServiceAccountToken: false
+---
+# 1. The legitimate identity gets exactly its policy and nothing more.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: probe-least-privilege
+  namespace: orders
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vaultprobe
+    spec:
+      serviceAccountName: orders-api
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: orders-api:ci
+          imagePullPolicy: IfNotPresent
+          command: ["/vaultprobe"]
+          args:
+            - -scenario=least-privilege
+            - -role=orders-api
+            - -expect-login=allow
+            - -check=read|database/creds/orders-api|allow
+            - -check=write|pki_int/issue/orders-api|allow|{"common_name":"orders-api.orders.svc","ttl":"60s"}
+            - -check=write|transit/encrypt/orders|allow|{"plaintext":"cHJvYmU="}
+            - -check=read|kv/data/orders-api/config|deny
+            - -check=list|database/roles|deny
+            - -check=read|database/config/orders-postgres|deny
+            - -check=write|database/rotate-root/orders-postgres|deny|{}
+            - -check=write|pki_int/issue/orders-api|deny|{"common_name":"evil.example.com"}
+            - -check=write|pki/root/sign-intermediate|deny|{"csr":"x"}
+            - -check=write|transit/encrypt/payments|deny|{"plaintext":"cHJvYmU="}
+            - -check=write|transit/keys/orders/rotate|deny|{}
+            - -check=read|transit/export/encryption-key/orders|deny
+            - -check=write|auth/token/create|deny|{}
+            - -check=read|sys/audit|deny
+            - -check=tcp|postgres.db.svc:5432|deny
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: vault-token
+              mountPath: /var/run/secrets/vault
+              readOnly: true
+      volumes:
+        - name: vault-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: vault
+                  expirationSeconds: 600
+                  path: token
+---
+# 2. A pod with the wrong service account in the right namespace.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: probe-wrong-sa
+  namespace: orders
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vaultprobe
+    spec:
+      serviceAccountName: intruder
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: orders-api:ci
+          imagePullPolicy: IfNotPresent
+          command: ["/vaultprobe"]
+          args:
+            - -scenario=wrong-service-account
+            - -role=orders-api
+            - -expect-login=deny
+            - -check=tcp|postgres.db.svc:5432|deny
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: vault-token
+              mountPath: /var/run/secrets/vault
+              readOnly: true
+      volumes:
+        - name: vault-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: vault
+                  expirationSeconds: 600
+                  path: token
+---
+# 3. The same wrong service account trying the ESO role instead.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: probe-wrong-sa-eso-role
+  namespace: orders
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vaultprobe
+    spec:
+      serviceAccountName: intruder
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: orders-api:ci
+          imagePullPolicy: IfNotPresent
+          command: ["/vaultprobe"]
+          args:
+            - -scenario=wrong-service-account-eso-role
+            - -role=eso-orders
+            - -expect-login=deny
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: vault-token
+              mountPath: /var/run/secrets/vault
+              readOnly: true
+      volumes:
+        - name: vault-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: vault
+                  expirationSeconds: 600
+                  path: token
+---
+# 4. The right service account name in the wrong namespace.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: probe-wrong-namespace
+  namespace: rogue
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vaultprobe
+    spec:
+      serviceAccountName: orders-api
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: orders-api:ci
+          imagePullPolicy: IfNotPresent
+          command: ["/vaultprobe"]
+          args:
+            - -scenario=wrong-namespace
+            - -role=orders-api
+            - -expect-login=deny
+            - -check=tcp|postgres.db.svc:5432|deny
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: vault-token
+              mountPath: /var/run/secrets/vault
+              readOnly: true
+      volumes:
+        - name: vault-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: vault
+                  expirationSeconds: 600
+                  path: token
+---
+# 5. The right service account, but its default API-server token (as an
+# attacker would find it mounted in a compromised pod) instead of the
+# audience-bound "vault" token.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: probe-wrong-audience
+  namespace: orders
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vaultprobe
+    spec:
+      serviceAccountName: orders-api
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: orders-api:ci
+          imagePullPolicy: IfNotPresent
+          command: ["/vaultprobe"]
+          args:
+            - -scenario=wrong-audience
+            - -role=orders-api
+            - -jwt=/var/run/secrets/kubernetes.io/serviceaccount/token
+            - -expect-login=deny
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi

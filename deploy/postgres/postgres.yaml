@@ -1,0 +1,155 @@
+# PostgreSQL for the demo. The Secret "postgres-bootstrap" is created at run
+# time by e2e/setup.sh with random passwords; nothing secret is in git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: db
+data:
+  10-init.sh: |
+    #!/bin/sh
+    # Runs once on first start. vault_admin is the only role Vault uses; it can
+    # create roles and hand out orders_app, nothing else.
+    set -eu
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+      -v vault_pw="$VAULT_ADMIN_PASSWORD" <<'SQL'
+    CREATE ROLE vault_admin WITH LOGIN CREATEROLE PASSWORD :'vault_pw';
+    GRANT pg_signal_backend TO vault_admin;
+    CREATE ROLE orders_app NOLOGIN;
+    GRANT orders_app TO vault_admin WITH ADMIN OPTION;
+    REVOKE ALL ON DATABASE app FROM PUBLIC;
+    GRANT CONNECT ON DATABASE app TO vault_admin, orders_app;
+    REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+    CREATE TABLE orders (
+      id              bigserial PRIMARY KEY,
+      item            text NOT NULL,
+      note_ciphertext text NOT NULL,
+      created_by      text NOT NULL DEFAULT current_user,
+      created_at      timestamptz NOT NULL DEFAULT now()
+    );
+    GRANT SELECT, INSERT ON orders TO orders_app;
+    GRANT USAGE ON SEQUENCE orders_id_seq TO orders_app;
+    SQL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: db
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: db
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: POSTGRES_IMAGE # replaced by e2e/setup.sh with the pinned tag@digest
+          env:
+            - name: POSTGRES_DB
+              value: app
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-bootstrap
+                  key: postgres-password
+            - name: VAULT_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-bootstrap
+                  key: vault-admin-password
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "app", "-h", "127.0.0.1"]
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        - name: init
+          configMap:
+            name: postgres-init
+---
+# Only Vault (to manage roles) and orders-api pods (to use them) may reach
+# PostgreSQL. Everything else in the cluster is denied at the network layer.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+  namespace: db
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: vault
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: orders
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: orders-api
+      ports:
+        - port: 5432
+          protocol: TCP

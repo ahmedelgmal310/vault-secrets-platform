@@ -1,0 +1,278 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Go 1.27.3 is a security release (crypto/x509) younger than the 14-day
+  # cooldown; see docs/versions.md for why it is the one exception.
+  GO_VERSION: "1.27.3"
+  GOLANGCI_LINT_VERSION: v2.14.0
+  GOVULNCHECK_VERSION: v1.9.0
+  TF_VERSION: 1.16.5
+  TFLINT_VERSION: v0.64.0
+  TFLINT_SHA256: cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
+  HELM_VERSION: v4.3.0
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  CRDS_CATALOG_REF: 63669a570e231d4f1f8396d229a1de512bcf0a34
+  HADOLINT_IMAGE: mirror.gcr.io/hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+  ACTIONLINT_IMAGE: rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+  TRIVY_IMAGE: mirror.gcr.io/aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+  COVERAGE_MIN: "80"
+
+jobs:
+  go:
+    name: Go vet, test (race + coverage), govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: go vet
+        run: go vet ./...
+      - name: go test (race, coverage)
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Coverage gate
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {sub("%", "", $3); print $3}')
+          echo "Total coverage: ${total}% (minimum ${COVERAGE_MIN}%)"
+          echo "Go test coverage: **${total}%** (gate ${COVERAGE_MIN}%)" >> "$GITHUB_STEP_SUMMARY"
+          awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN { exit !(t + 0 >= m + 0) }'
+      - name: govulncheck
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 7
+
+  golangci-lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+  static:
+    name: gitleaks, shellcheck, actionlint, hadolint, policy lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: gitleaks (full history)
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+            "$GITLEAKS_IMAGE" git --no-banner --redact --verbose /repo
+      - name: shellcheck
+        run: shellcheck -x e2e/*.sh
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
+      - name: hadolint
+        run: docker run --rm -v "$PWD:/work:ro" -w /work "$HADOLINT_IMAGE" hadolint Dockerfile
+      - name: Vault policy lint (least privilege)
+        run: go run ./cmd/policylint terraform/policies/*.hcl
+
+  terraform:
+    name: Terraform fmt, validate, tflint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff terraform
+      - name: terraform validate
+        run: |
+          terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=terraform validate
+      - name: tflint
+        run: |
+          curl -fsSL --retry 3 -o /tmp/tflint.zip \
+            "https://github.com/terraform-linters/tflint/releases/download/${TFLINT_VERSION}/tflint_linux_amd64.zip"
+          echo "${TFLINT_SHA256}  /tmp/tflint.zip" | sha256sum --check --quiet
+          unzip -q -o /tmp/tflint.zip -d /tmp/tflint
+          /tmp/tflint/tflint --chdir=terraform --format compact
+
+  manifests:
+    name: kubeconform (strict, with CRD schemas)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install kubeconform
+        run: |
+          curl -fsSLo /tmp/kubeconform.tgz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tgz" | sha256sum -c -
+          tar -xzf /tmp/kubeconform.tgz -C /usr/local/bin kubeconform
+      - name: kubeconform
+        run: |
+          kubeconform -strict -summary -output pretty \
+            -schema-location default \
+            -schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRDS_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+            deploy/app deploy/attacks deploy/eso/secretstore.yaml deploy/postgres
+
+  image:
+    name: Image build, Trivy gate, SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: orders-api:ci
+          build-args: VERSION=ci-${{ github.sha }}
+          cache-from: type=gha,scope=orders-api
+          cache-to: type=gha,scope=orders-api,mode=max
+      - name: Export image
+        run: mkdir -p /tmp/img && docker save orders-api:ci -o /tmp/img/orders-api.tar
+      - name: Trivy vulnerability gate (HIGH/CRITICAL)
+        run: |
+          docker run --rm -v /tmp/img:/img "$TRIVY_IMAGE" image --input /img/orders-api.tar \
+            --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress
+      - name: SBOM (CycloneDX)
+        run: |
+          docker run --rm -v /tmp/img:/img "$TRIVY_IMAGE" image --input /img/orders-api.tar \
+            --format cyclonedx --output /img/sbom.cdx.json --no-progress
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: /tmp/img/sbom.cdx.json
+          retention-days: 30
+
+  e2e:
+    name: E2E on kind (Vault HA, dynamic DB creds, PKI, ESO, attacks, audit, failover)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [go, terraform, manifests]
+    env:
+      RESULTS_DIR: ${{ github.workspace }}/e2e-results
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+      - name: Build orders-api image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: orders-api:ci
+          build-args: VERSION=ci-${{ github.sha }}
+          cache-from: type=gha,scope=orders-api
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          node_image: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
+          kubectl_version: v1.36.4
+          cluster_name: vault
+          wait: 120s
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Load image into kind
+        run: kind load docker-image orders-api:ci --name vault
+      - name: Install PostgreSQL, Vault (sealed) and External Secrets Operator
+        run: e2e/setup.sh
+      - name: Initialise, unseal and join Vault (keys stay on the runner)
+        run: e2e/vault-init.sh
+      - name: Configure Vault with Terraform, rotate DB root credential
+        run: e2e/configure.sh
+      - name: Deploy orders-api
+        run: e2e/deploy-app.sh
+      - name: Dynamic DB credentials expire, revoke and rotate
+        run: e2e/test-dynamic-db.sh
+      - name: Short-lived TLS certificates rotate in memory
+        run: e2e/test-pki.sh
+      - name: Transit encryption as a service
+        run: e2e/test-transit.sh
+      - name: External Secrets Operator sync and rotation
+        run: e2e/test-eso.sh
+      - name: Attacks - wrong identities are denied, least privilege holds
+        run: e2e/attacks.sh
+      - name: Audit log records access and denials
+        run: e2e/test-audit.sh
+      - name: Leader failover
+        run: e2e/test-failover.sh
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -60 || true
+          kubectl -n orders logs deployment/orders-api --tail=80 || true
+          kubectl -n external-secrets logs deployment/external-secrets --tail=40 || true
+          for p in vault-0 vault-1 vault-2; do kubectl -n vault logs "$p" --tail=30 || true; done
+      - name: Revoke root token and delete private files
+        if: always()
+        run: e2e/cleanup.sh
+      - name: Results summary
+        if: always()
+        run: e2e/summary.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: e2e-results
+          path: e2e-results/
+          retention-days: 90
+          if-no-files-found: ignore

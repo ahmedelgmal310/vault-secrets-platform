@@ -1,0 +1,26 @@
+# build and test output
+/bin/
+/dist/
+coverage.out
+*.test
+e2e-results/
+
+# terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+
+# never commit Vault init output or tokens
+vault-init*.json
+*.header
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# local tooling state
+.omc/
+.impeccable/
