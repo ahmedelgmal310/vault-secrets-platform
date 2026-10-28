@@ -20,6 +20,10 @@ record terraform_second_plan_changes "$(terraform -chdir="$ROOT/terraform" plan 
 unset VAULT_TOKEN
 
 log "Rotating the database root credential (vault_admin)"
+# Control: TCP logins are password-checked, so the bootstrap password works now
+# and a wrong one does not.
+pg_login vault_admin < "$PRIVATE_DIR/vault-admin-password" > /dev/null || fail "bootstrap password rejected before rotation"
+if echo wrong-password | pg_login vault_admin > /dev/null; then fail "PostgreSQL accepts any password over TCP"; fi
 vault POST database/rotate-root/orders-postgres -o /dev/null
 # The password Terraform knew must no longer work.
 if pg_login vault_admin < "$PRIVATE_DIR/vault-admin-password" > /dev/null; then

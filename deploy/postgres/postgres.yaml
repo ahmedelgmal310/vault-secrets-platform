@@ -80,6 +80,10 @@ spec:
               value: app
             - name: POSTGRES_USER
               value: postgres
+            # The image trusts TCP from 127.0.0.1 by default. Require passwords on
+            # every TCP connection; only the Unix socket (kubectl exec) is trusted.
+            - name: POSTGRES_INITDB_ARGS
+              value: "--auth-host=scram-sha-256 --auth-local=trust"
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
