@@ -58,4 +58,6 @@ record attack_checks_passed "$passed"
 record attack_denied_as_expected "$denied"
 record attack_allowed_as_expected "$allowed"
 record_str attack_login_denials "$login_errors"
-[ "$failed_jobs" = 0 ] && [ "$passed" = "$total" ] || fail "$((total - passed)) probe checks did not match expectations"
+if [ "$failed_jobs" != 0 ] || [ "$passed" != "$total" ]; then
+  fail "$((total - passed)) probe checks did not match expectations"
+fi

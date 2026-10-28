@@ -44,6 +44,7 @@ issue_cred "$cred"
 user="$(jq -r .data.username "$cred")"
 lease="$(jq -r .lease_id "$cred")"
 # A long-running session held open with the credential.
+# shellcheck disable=SC2016 # expanded by the shell inside the pod
 jq -r .data.password "$cred" | kubectl -n db exec -i postgres-0 -- sh -c \
   'PGPASSWORD="$(cat)" psql -h 127.0.0.1 -U "$1" -d app -tAqc "select pg_sleep(120)"' _ "$user" > /dev/null 2>&1 &
 holder=$!

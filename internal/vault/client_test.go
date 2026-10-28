@@ -96,7 +96,7 @@ func TestErrorResponse(t *testing.T) {
 	})
 	_, err := c.Read(context.Background(), "kv/data/x")
 	var re *ResponseError
-	if !errors.As(err, &re) || re.StatusCode != 403 || !strings.Contains(err.Error(), "permission denied") {
+	if !errors.As(err, &re) || re.StatusCode != http.StatusForbidden || !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("err = %v", err)
 	}
 	if StatusCode(err) != 403 || StatusCode(errors.New("x")) != 0 {

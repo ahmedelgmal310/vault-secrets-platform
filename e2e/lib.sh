@@ -56,7 +56,9 @@ record_str() { record "$1" "$(jq -Rn --arg v "$2" '$v')"; }
 PF_PIDS=()
 pf_cleanup() {
   local p
-  for p in "${PF_PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
+  for p in "${PF_PIDS[@]:-}"; do
+    if [ -n "$p" ]; then kill "$p" 2> /dev/null || true; fi
+  done
   PF_PIDS=()
 }
 trap pf_cleanup EXIT
@@ -125,6 +127,7 @@ pg_super() { kubectl -n db exec postgres-0 -- psql -U postgres -d app -tAqc "$1"
 # pg_login USER: password on stdin; prints current_user or the error; returns
 # psql's status. TCP to 127.0.0.1 so password authentication applies.
 pg_login() {
+  # shellcheck disable=SC2016 # expanded by the shell inside the pod
   kubectl -n db exec -i postgres-0 -- sh -c \
     'PGPASSWORD="$(cat)" PGCONNECT_TIMEOUT=5 psql -h 127.0.0.1 -U "$1" -d app -tAqc "select current_user" 2>&1' _ "$1"
 }

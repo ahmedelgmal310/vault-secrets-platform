@@ -85,20 +85,23 @@ func loadConfig(getenv func(string) string) (config, error) {
 	return c, nil
 }
 
-func main() {
+func main() { os.Exit(realMain()) }
+
+func realMain() int {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "orders-api", "version", version)
 	slog.SetDefault(logger)
 	cfg, err := loadConfig(os.Getenv)
 	if err != nil {
 		logger.Error("invalid configuration", "error", err)
-		os.Exit(2)
+		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, cfg, logger); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("exiting", "error", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // retry runs fn until it succeeds or ctx ends, with capped exponential backoff.

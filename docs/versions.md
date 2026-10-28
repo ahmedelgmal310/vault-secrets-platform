@@ -76,5 +76,5 @@ SDK, which keeps the dependency tree to pgx and two `x/` modules.
 | hadolint | v2.15.1 | 2026-07-31 | `sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d` |
 | Trivy | 0.75.0 | 2026-10-01 | `sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa` |
 | kubeconform | v0.8.0 | 2026-06-04 | SHA-256 `9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883` |
-| CRDs-catalog (schemas for kubeconform) | commit | 2026-10-08 | `63669a570e231d4f1f8396d229a1de512bcf0a34` |
+| CRDs-catalog (schemas for kubeconform) | commit | 2026-06-02 | `f3e4382095909ac60000da025f323ba44d4c738a` (the 2026-10-08 ESO schema does not compile) |
 | shellcheck | preinstalled on the runner image | | |
