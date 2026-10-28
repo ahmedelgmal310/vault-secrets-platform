@@ -171,7 +171,7 @@ the job fails on the first mismatch.
 | Script | Asserts |
 |---|---|
 | [`test-dynamic-db.sh`](e2e/test-dynamic-db.sh) | A fresh credential logs in; Vault drops the role when the lease expires; the expired password is refused. A revoked lease kills an open session and blocks new logins. orders-api renews, rotates to a different user at max_ttl, queries as the new user, and the old role is gone |
-| [`test-pki.sh`](e2e/test-pki.sh) | The served chain verifies against the Vault root; lifetime ≤ role max; another hostname is rejected; the serial changes before expiry and an expired certificate is never served |
+| [`test-pki.sh`](e2e/test-pki.sh) | The served chain verifies against the Vault root; lifetime ≤ role max; another hostname is rejected; the serial changes before expiry and no poll ever sees an expired certificate |
 | [`test-transit.sh`](e2e/test-transit.sh) | The stored note is `vault:v1:` ciphertext, the plaintext is nowhere in the table, the row was written by the current dynamic user, and decryption round-trips |
 | [`test-eso.sh`](e2e/test-eso.sh) | The KV value appears in the Kubernetes Secret; a new version propagates; the Secret is owned by the ExternalSecret |
 | [`attacks.sh`](e2e/attacks.sh) | Five probe Jobs ([`deploy/attacks`](deploy/attacks)) built from [`cmd/vaultprobe`](cmd/vaultprobe); every allow and every deny must match |
@@ -180,7 +180,49 @@ the job fails on the first mismatch.
 
 ## Results from CI
 
-RESULTS_PLACEHOLDER
+These numbers come from CI run
+[#40609910765](https://github.com/ahmedelgmal310/vault-secrets-platform/actions/runs/40609910765)
+on `main` (all 7 jobs green, e2e job 5 min 14 s): kind v0.33.0, Kubernetes v1.36.4, Vault
+2.1.2 (3-node Raft), PostgreSQL 18.6, External Secrets Operator 2.12.0. Every run posts the
+same table in its job summary and uploads `results.json`, the probe results and a redacted
+audit excerpt as the `e2e-results` artifact.
+
+| Scenario | Measured |
+|---|---|
+| Vault bootstrap: init (5 shares, threshold 3), unseal, Raft join | **3 healthy voters** in 31.5 s |
+| Terraform apply | 20 resources in 2.8 s; second `plan` reports **no drift** |
+| `vault_admin` after `rotate-root` | bootstrap password **rejected** (only Vault knows the new one) |
+| orders-api from `kubectl apply` to ready (login + cert + DB credential) | 2.9 s, **0** Kubernetes Secret references in the pod |
+| **Dynamic credential expiry**: lease TTL → role dropped by Vault | 20 s TTL → role gone **20.5 s** after issue |
+| Login with the expired credential | `FATAL: password authentication failed` |
+| **Revocation**: `lease revoke` → open session terminated | **0.1 s**; new logins refused, role dropped |
+| **Service rotation**: orders-api renewed its lease 4 times, then switched user at max_ttl | **58 s** (max_ttl 60 s); old role dropped, no sessions left, queries run as the new user |
+| TLS certificate served by orders-api | **150 s** lifetime (120 s TTL + 30 s backdate), chain of 3, verifies against the Vault root; wrong hostname rejected |
+| TLS rotation in memory | new serial with **≥ 50 s** of validity left on the old one; no expired certificate at any of the polls |
+| Transit | DB stores `vault:v1:…`; **0** rows contain the plaintext; row written by the current dynamic user |
+| ESO: initial sync / rotated value reaches the Kubernetes Secret | 1.5 s / **4.3 s** (refreshInterval 5 s) |
+| **Access probes** | **22/22** outcomes as expected: 4 allowed, **18 denied** |
+| Audit log (active node) | 254 entries: 2 service logins, **4 denied logins**, 3 DB credential reads, 6 lease renewals, 5 ESO reads, **10 permission-denied** responses, **0** plaintext secret values |
+| **Leader failover**: delete the active pod | new leader in **6.5 s**; old node unsealed and back in 8.2 s; 3 voters; orders-api kept renewing and serving |
+| Root token at end of job | revoked (`lookup-self` → HTTP 403) |
+| Go unit tests | coverage **88.1%** (gate 80%), race detector on |
+
+The four denied logins, with Vault's own reasons (from the probe output and the audit log):
+
+| Probe | Identity | Vault's answer |
+|---|---|---|
+| `wrong-service-account` | SA `intruder` in `orders`, role `orders-api` | 403 `service account name not authorized` |
+| `wrong-service-account-eso-role` | SA `intruder` in `orders`, role `eso-orders` | 403 `service account name not authorized` |
+| `wrong-namespace` | SA `orders-api` in namespace `rogue` | 403 `namespace not authorized` |
+| `wrong-audience` | the real SA, but its default API-server token | 403 `invalid audience (aud) claim` |
+
+And what the legitimate identity was refused (`least-privilege` probe): reading the ESO
+KV secret, listing database roles, reading the DB connection config, `rotate-root`, signing
+with the root CA, a certificate for `evil.example.com` (refused by the PKI role, HTTP 400),
+another transit key, rotating or exporting its own transit key, creating tokens, reading
+`sys/audit`, and opening a TCP connection to PostgreSQL from a pod that is not orders-api
+(NetworkPolicy). Each of the ten policy denials appears in the audit log with the
+caller's identity `orders/orders-api`.
 
 ## Security model
 
@@ -189,7 +231,7 @@ RESULTS_PLACEHOLDER
 | Stolen DB password | Per-lease PostgreSQL role, 20 s TTL, 60 s max, dropped on expiry and on rotation; `VALID UNTIL` as a second fence | `test-dynamic-db.sh` A and C |
 | Credential still in use after compromise is detected | `vault lease revoke` runs `pg_terminate_backend` then `DROP ROLE` | `test-dynamic-db.sh` B |
 | Another pod impersonates the service | Role bound to SA name **and** namespace **and** audience | probes `wrong-service-account`, `wrong-namespace`, `wrong-audience` |
-| Compromised service reaches for more | Policy with five exact paths; PKI role restricts names | probe `least-privilege` (11 denied attempts) |
+| Compromised service reaches for more | Policy with five paths (no wildcards except the scoped revoke); PKI role restricts names | probe `least-privilege` (11 denied Vault calls) |
 | Lateral movement to the database | NetworkPolicy: only Vault and orders-api pods reach 5432 | probes' `tcp postgres.db.svc:5432` checks |
 | Leaked TLS key | 2-minute certificates, key in memory only, `no_store` | `test-pki.sh` |
 | Secret values in logs | Audit device HMACs secrets; scripts mask and never print values | `test-audit.sh` leak check, Gitleaks |
