@@ -132,13 +132,21 @@ pg_login() {
     'PGPASSWORD="$(cat)" PGCONNECT_TIMEOUT=5 psql -h 127.0.0.1 -U "$1" -d app -tAqc "select current_user" 2>&1' _ "$1"
 }
 
-# wait_for TIMEOUT_S DESCRIPTION COMMAND...: poll once a second.
-wait_for() {
-  local timeout="$1" what="$2" start
-  shift 2
+# poll TIMEOUT_S COMMAND...: run COMMAND once a second until it succeeds;
+# returns 1 on timeout.
+poll() {
+  local timeout="$1" start
+  shift
   start="$(date +%s)"
   until "$@"; do
-    if [ $(($(date +%s) - start)) -ge "$timeout" ]; then fail "timed out after ${timeout}s waiting for: $what"; fi
+    if [ $(($(date +%s) - start)) -ge "$timeout" ]; then return 1; fi
     sleep 1
   done
+}
+
+# wait_for TIMEOUT_S DESCRIPTION COMMAND...: poll, and fail the step on timeout.
+wait_for() {
+  local timeout="$1" what="$2"
+  shift 2
+  poll "$timeout" "$@" || fail "timed out after ${timeout}s waiting for: $what"
 }

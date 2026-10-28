@@ -59,8 +59,14 @@ for pod in vault-1 vault-2; do
 done
 
 log "Waiting for 3 healthy Raft voters"
+has_active() { [ -n "$(active_vault_pod)" ]; }
+wait_for 60 "a pod labelled vault-active" has_active
 vault_connect
-wait_for 120 "3 healthy voters" three_voters
+if ! poll 120 three_voters; then
+  vault GET sys/storage/raft/autopilot/state | jq . || true
+  kubectl -n vault get pods --show-labels || true
+  fail "Raft cluster did not reach 3 healthy voters"
+fi
 vault GET sys/storage/raft/autopilot/state | jq -r '.data.servers[] | "    \(.id)  \(.status)  healthy=\(.healthy)"'
 
 record vault_init_unseal_seconds "$(since "$start")"
