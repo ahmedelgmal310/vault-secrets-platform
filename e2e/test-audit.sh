@@ -55,8 +55,10 @@ hmac="$(jq -rs '[.[] | select(.type == "response" and .request.path == "database
 
 # Redacted excerpt for the artifact: who, what, outcome. No request/response bodies.
 jq -c 'select(.type == "response") | {time, path: .request.path, op: .request.operation,
-  identity: (.auth.metadata.service_account_namespace // "") + "/" + (.auth.metadata.service_account_name // .auth.display_name // ""),
-  error: (.error // "")}' "$log_file" | grep -v '"path":"sys/storage/raft' > "$RESULTS_DIR/audit-excerpt.jsonl" || true
+  identity: ((.auth.metadata.service_account_namespace // "") + "/" + (.auth.metadata.service_account_name // .auth.display_name // "")),
+  error: (.error // "")}' "$log_file" > "$PRIVATE_DIR/excerpt.jsonl"
+grep -v '"path":"sys/storage/raft' "$PRIVATE_DIR/excerpt.jsonl" > "$RESULTS_DIR/audit-excerpt.jsonl" || true
+record audit_excerpt_lines "$(wc -l < "$RESULTS_DIR/audit-excerpt.jsonl" | tr -d ' ')"
 
 record audit_entries "$entries"
 record audit_service_logins "$logins_ok"
