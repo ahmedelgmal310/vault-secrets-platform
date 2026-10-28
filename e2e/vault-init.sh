@@ -10,7 +10,7 @@ api_up() { [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$1/v1/s
 is_leader() { [ "$(curl -s "http://127.0.0.1:$1/v1/sys/leader" | jq -r .is_self)" = true ]; }
 voters() {
   vault GET sys/storage/raft/autopilot/state |
-    jq -r '[.data.servers[] | select(.status == "voter" and .healthy == true)] | length'
+    jq -r '[.data.servers[] | select(.node_type == "voter" and .healthy == true)] | length'
 }
 three_voters() { [ "$(voters 2>/dev/null)" = 3 ]; }
 
