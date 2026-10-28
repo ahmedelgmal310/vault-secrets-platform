@@ -21,7 +21,7 @@ renewals="$(count "$resp and .request.path == \"sys/leases/renew\" and (.auth.me
 revokes="$(count "$resp and (.request.path | startswith(\"sys/leases/revoke/database/creds/orders-api/\")) and (.auth.metadata.service_account_name // \"\") == \"orders-api\"")"
 pki_issues="$(count "$resp and .request.path == \"pki_int/issue/orders-api\" and (.error // \"\") == \"\"")"
 eso_reads="$(count "$resp and .request.path == \"kv/data/orders-api/config\" and (.auth.metadata.service_account_name // \"\") == \"orders-eso\"")"
-denied="$(count "$resp and .error == \"permission denied\"")"
+denied="$(count "$resp and ((.error // \"\") | contains(\"permission denied\"))")"
 
 echo "    entries:                         $entries"
 echo "    orders-api logins:               $logins_ok"
@@ -33,7 +33,7 @@ echo "    TLS certificates issued:         $pki_issues"
 echo "    ESO KV reads:                    $eso_reads"
 echo "    permission denied responses:     $denied"
 echo "    denied paths:"
-jq -rs '[.[] | select(.type == "response" and .error == "permission denied") | .request.path] | unique | .[] | "      " + .' "$log_file"
+jq -rs '[.[] | select(.type == "response" and ((.error // "") | contains("permission denied"))) | .request.path] | unique | .[] | "      " + .' "$log_file"
 echo "    denied login reasons:"
 jq -rs '[.[] | select(.type == "response" and .request.path == "auth/kubernetes/login" and (.error // "") != "") | .error] | unique | .[] | "      " + .' "$log_file"
 

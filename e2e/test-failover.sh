@@ -33,7 +33,7 @@ rejoin="$(since "$start")"
 vault_connect
 healthy() { [ "$(vault GET sys/storage/raft/autopilot/state 2> /dev/null | jq -r .data.healthy)" = true ]; }
 wait_for 120 "Raft autopilot to report healthy" healthy
-voters="$(vault GET sys/storage/raft/autopilot/state | jq '[.data.servers[] | select(.node_type == "voter" and .healthy)] | length')"
+voters="$(vault GET sys/storage/raft/autopilot/state | jq '[.data.servers[] | select((.status == "leader" or .status == "voter") and .healthy)] | length')"
 
 log "orders-api keeps renewing and serving through the failover"
 app_connect

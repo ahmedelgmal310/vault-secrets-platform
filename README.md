@@ -282,7 +282,7 @@ token; the app policy cannot). New writes use `vault:v2:`, old ciphertext still 
 `transit/rewrap` upgrades stored values, then raise `min_decryption_version`.
 
 **Investigate denials**: in the audit log, `jq 'select(.type=="response" and
-.error=="permission denied") | {time, path: .request.path, who: .auth.display_name}'`.
+(.error // "" | contains("permission denied"))) | {time, path: .request.path, who: .auth.display_name}'`.
 
 ## Repository layout
 
